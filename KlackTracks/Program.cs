@@ -51,7 +51,6 @@ namespace KlackTracks {
             if (code >= 0 && wParam == (IntPtr)WM_KEYDOWN) {
                 var keyCode = (Keys)Marshal.ReadInt32(lParam);
                 logStream.WriteLine(DateTime.UtcNow.Ticks + " " + keyCode.ToString());
-                logStream.Flush();
             }
             return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
         }
